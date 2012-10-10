@@ -262,6 +262,10 @@ dagre.graph.create = function() {
     }
   }
 
+  function hasEdge(u, v) {
+    return _nodeId(v) in _nodes[_nodeId(u)].successors;
+  }
+
   function nodes() {
     return _mapNodes(Object.keys(_nodes));
   }
@@ -278,6 +282,32 @@ dagre.graph.create = function() {
     });
     edges().forEach(function(e) {
       g.addEdge(e.tail(), e.head(), e.attrs);
+    });
+    return g;
+  }
+
+  /*
+   * Creates a new graph that only includes the specified nodes. Edges that are
+   * only incident on the specified nodes are included in the new graph. While
+   * node ids will be the same in the new graph, edge ids are not guaranteed to
+   * be the same.
+   */
+  function subgraph(nodes) {
+    var g = dagre.graph.create();
+    mergeAttributes(_attrs, g.attrs);
+    var nodeIds = nodes.map(_nodeId);
+    nodeIds.forEach(function(uId) {
+      g.addNode(uId, node(uId).attrs);
+    });
+    nodeIds.forEach(function(uId) {
+      var u = node(uId);
+      u.successors().forEach(function(v) {
+        if (g.node(v.id())) {
+          u.outEdges(v).forEach(function(e) {
+            g.addEdge(e.tail().id(), e.head().id(), e.attrs);
+          })
+        }
+      });
     });
     return g;
   }
@@ -333,8 +363,10 @@ dagre.graph.create = function() {
     removeEdge: removeEdge,
     node: node,
     edge: edge,
+    hasEdge: hasEdge,
     nodes: nodes,
     edges: edges,
+    subgraph: subgraph,
     copy: copy
   };
 }
@@ -600,25 +632,19 @@ dagre.layout = (function() {
     });
   }
 
-  function rankToLayering(g) {
-    var layering = [];
-    g.nodes().forEach(function(u) {
-      var rank = u.attrs.rank;
-      layering[rank] = layering[rank] || [];
-      layering[rank].push(u);
-      delete u.attrs.rank;
-    });
-    return layering;
-  }
-
   return function(g) {
+    if (g.nodes().length === 0) {
+      // Nothing to do!
+      return;
+    }
+
     var selfLoops = removeSelfLoops(g);
     acyclic(g);
 
     dagre.layout.rank(g);
 
     addDummyNodes(g);
-    var layering = rankToLayering(g);
+    var layering = dagre.layout.order(g);
 
     dagre.layout.position(g, layering);
 
@@ -660,9 +686,84 @@ dagre.layout.rank = (function() {
     }
   }
 
+  function feasibleTree(g) {
+    // TODO make minLength configurable per edge
+    var minLength = 1;
+    var tree = dagre.util.prim(g, function(u, v) {
+      return Math.abs(u.attrs.rank - v.attrs.rank) - minLength;
+    });
+
+    var visited = {};
+    function dfs(u, rank) {
+      visited[u.id()] = true;
+      u.attrs.rank = rank;
+
+      tree[u.id()].forEach(function(vId) {
+        if (!(vId in visited)) {
+          var v = g.node(vId);
+          dfs(v, rank + (g.hasEdge(u, v) ? minLength : -minLength));
+        }
+      });
+    }
+
+    dfs(g.nodes()[0], 0);
+
+    return tree;
+  }
+
+  function normalize(g) {
+    var m = min(g.nodes().map(function(u) { return u.attrs.rank; }));
+    g.nodes().forEach(function(u) {
+      u.attrs.rank -= m;
+    });
+  }
+
   return function(g) {
-    initRank(g);
+    components(g).forEach(function(cmpt) {
+      var subgraph = g.subgraph(cmpt);
+      initRank(subgraph);
+      var tree = feasibleTree(subgraph);
+      normalize(subgraph);
+      subgraph.nodes().forEach(function(u) {
+        g.node(u.id()).attrs.rank = u.attrs.rank;
+      });
+    });
   };
+})();
+dagre.layout.order = (function() {
+  function initOrder(g) {
+    var layering = [];
+    var visited = {};
+
+    function dfs(u) {
+      if (u.id() in visited) {
+        return;
+      }
+      visited[u.id()] = true;
+
+      var rank = u.attrs.rank;
+      for (var i = layering.length; i <= rank; ++i) {
+        layering[i] = [];
+      }
+      layering[rank].push(u);
+
+      u.neighbors().forEach(function(v) {
+        dfs(v);
+      });
+    }
+
+    g.nodes().forEach(function(u) {
+      if (u.attrs.rank === 0) {
+        dfs(u);
+      }
+    });
+
+    return layering;
+  }
+
+  return function(g) {
+    return initOrder(g);
+  }
 })();
 /*
  * The algorithms here are based on Brandes and Köpf, "Fast and Simple
@@ -1183,6 +1284,8 @@ dagre.render = function(g, svg) {
   _renderNodes();
   _renderEdges();
 }
+dagre.util = {};
+
 function createSVGElement(tag) {
   return document.createElementNS("http://www.w3.org/2000/svg", tag);
 }
@@ -1277,6 +1380,86 @@ function concat(arrays) {
 function values(obj) {
   return Object.keys(obj).map(function(k) { return obj[k]; });
 }
+
+/*
+ * Returns all components in the graph using undirected navigation.
+ */
+var components = dagre.util.components = function(g) {
+  var results = [];
+  var visited = {};
+
+  function dfs(u, component) {
+    if (!(u.id() in visited)) {
+      visited[u.id()] = true;
+      component.push(u);
+      u.neighbors().forEach(function(v) {
+        dfs(v, component);
+      });
+    }
+  };
+
+  g.nodes().forEach(function(u) {
+    var component = [];
+    dfs(u, component);
+    if (component.length > 0) {
+      results.push(component);
+    }
+  });
+
+  return results;
+};
+
+/*
+ * This algorithm uses undirected traversal to find a miminum spanning tree
+ * using the supplied weight function. The algorithm is described in
+ * Cormen, et al., "Introduction to Algorithms". The returned structure
+ * is an array of node id to an array of adjacent nodes.
+ */
+var prim = dagre.util.prim = function(g, weight) {
+  var result = {};
+  var parent = {};
+  var q = priorityQueue();
+
+  if (g.nodes().length === 0) {
+    return result;
+  }
+
+  g.nodes().forEach(function(u) {
+    q.add(u.id(), Number.POSITIVE_INFINITY);
+    result[u.id()] = [];
+  });
+
+  // Start from arbitrary node
+  q.decrease(g.nodes()[0].id(), 0);
+
+  var uId;
+  var init = false;
+  while (q.size() > 0) {
+    uId = q.removeMin();
+    if (uId in parent) {
+      result[uId].push(parent[uId]);
+      result[parent[uId]].push(uId);
+    } else if (init) {
+      throw new Error("Input graph is not connected:\n" + dagre.graph.write(g));
+    } else {
+      init = true;
+    }
+
+    var u = g.node(uId);
+    u.neighbors().forEach(function(v) {
+      var pri = q.priority(v.id());
+      if (pri !== undefined) {
+        var edgeWeight = weight(u, v);
+        if (edgeWeight < pri) {
+          parent[v.id()] = uId;
+          q.decrease(v.id(), edgeWeight);
+        }
+      }
+    });
+  }
+
+  return result;
+};
 function priorityQueue() {
   var _arr = [];
   var _keyIndices = {};
