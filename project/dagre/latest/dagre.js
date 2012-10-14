@@ -21,7 +21,7 @@ THE SOFTWARE.
 */
 (function() {
   dagre = {};
-dagre.version = "0.0.1";
+dagre.version = "0.0.2";
 /*
  * Graph API.
  *
@@ -504,28 +504,54 @@ dagre.preLayout = function(g) {
   var svg = createSVGElement("svg");
   document.documentElement.appendChild(svg);
 
+  // Minimum separation between adjacent nodes in the same rank
   defaultInt(g.attrs, "nodeSep", 50);
+
+  // Minimum separation between edges in the same rank
   defaultInt(g.attrs, "edgeSep", 10);
+
+  // Minimum separation between ranks
   defaultInt(g.attrs, "rankSep", 30);
 
+  // Number of passes to take during the ordering phase to optimize layout
   defaultInt(g.attrs, "orderIters", 24);
 
   g.nodes().forEach(function(u) {
     var attrs = u.attrs;
 
+    // Text label to display for the node
     defaultStr(attrs, "label", u.id().toString());
+
+    // Minimum width for the node. The node will automatically be expanded if
+    // it needs more space to enclose its label.
     defaultInt(attrs, "width", 0);
+
+    // Minimum height for the node. The node will automatically be expanded if
+    // it needs more space to enclose its label.
     defaultInt(attrs, "height", 0);
+
+    // The amount of padding to add to the label when sizing the node
     defaultInt(attrs, "marginX", 5);
+
+    // The amount of padding to add to the label when sizing the node
     defaultInt(attrs, "marginY", 5);
+
+    // The width of the stroke used to build the shape for the node
     defaultFloat(attrs, "strokeWidth", 1.5);
 
-    defaultInt(attrs, "weight", 1);
-
+    // The color to use for the stroke of the shape
     defaultVal(attrs, "color", "#333");
-    defaultVal(attrs, "fontColor", "#333");
+
+    // The color used to fill the interior of the node's shape
     defaultVal(attrs, "fill", "#fff");
+
+    // The color to use for the text in the shape
+    defaultVal(attrs, "fontColor", "#333");
+
+    // The font to use for the node's label
     defaultVal(attrs, "fontName", "Times New Roman");
+
+    // The font size to use for the node's label
     defaultInt(attrs, "fontSize", 14);
 
     var text = createTextNode(u);
@@ -540,9 +566,11 @@ dagre.preLayout = function(g) {
   g.edges().forEach(function(e) {
     var attrs = e.attrs;
 
-    defaultStr(attrs, "color", "#333");
-
+    // The width to use for the edge's line
     defaultFloat(attrs, "strokeWidth", 1.5);
+
+    // The color to use for the edge's line
+    defaultStr(attrs, "color", "#333");
   });
 
   document.documentElement.removeChild(svg);
@@ -1083,11 +1111,6 @@ dagre.layout.position = (function() {
       placeBlock(v);
     });
 
-    concat(layering).forEach(function(v) {
-      var vId = v.id();
-      xs[vId] = xs[root[vId].id()];
-    });
-
     var prevShift = 0;
     layering.forEach(function(layer) {
       var s = shift[layer[0].id()];
@@ -1098,12 +1121,16 @@ dagre.layout.position = (function() {
     });
 
     // Absolute coordinates
-    concat(layering).forEach(function(v) {
-      var vId = v.id();
-      var xDelta = shift[sink[root[vId].id()]];
-      if (xDelta < Number.POSITIVE_INFINITY) {
-        xs[vId] += xDelta;
-      }
+    layering.forEach(function(layer) {
+      layer.forEach(function(v) {
+        xs[v.id()] = xs[root[v.id()].id()];
+        if (root[v.id()].id() === v.id()) {
+          var xDelta = shift[sink[v.id()]];
+          if (xDelta < Number.POSITIVE_INFINITY) {
+            xs[v.id()] += xDelta;
+          }
+        }
+      });
     });
 
     return xs;
@@ -1222,16 +1249,14 @@ dagre.layout.position = (function() {
 
     // Align y coordinates with ranks
     var posY = 0;
-    for (var i = 0; i < layering.length; ++i) {
-      var layer = layering[i];
+    layering.forEach(function(layer) {
       var height = max(layer.map(actualNodeHeight));
       posY += height / 2;
-      for (var j = 0; j < layer.length; ++j) {
-        var uAttrs = layer[j].attrs;
-        uAttrs.y = posY;
-      }
+      layer.forEach(function(u) {
+        u.attrs.y = posY;
+      });
       posY += height / 2 + g.attrs.rankSep;
-    }
+    });
 
     // Save bounding box info
     var maxX = max(g.nodes().map(function(u) { return u.attrs.x + actualNodeWidth(u) / 2; }));
