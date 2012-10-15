@@ -21,7 +21,7 @@ THE SOFTWARE.
 */
 (function() {
   dagre = {};
-dagre.version = "0.0.2";
+dagre.version = "0.0.3";
 /*
  * Graph API.
  *
@@ -554,13 +554,13 @@ dagre.preLayout = function(g) {
     // The font size to use for the node's label
     defaultInt(attrs, "fontSize", 14);
 
-    var text = createTextNode(u);
-    svg.appendChild(text);
+    var svgNode = createSVGNode(u);
+    svg.appendChild(svgNode);
 
-    var bbox = text.getBBox();
+    var bbox = svgNode.getBBox();
     attrs.width = Math.max(attrs.width, bbox.width);
     attrs.height = Math.max(attrs.height, bbox.height);
-    svg.removeChild(text);
+    svg.removeChild(svgNode);
   });
 
   g.edges().forEach(function(e) {
@@ -1448,8 +1448,14 @@ dagre.render = function(g, svg) {
                                   "stroke: " + u.attrs.color].join("; "));
       group.appendChild(rect);
 
-      var text = createTextNode(u);
-      group.appendChild(text);
+      var svgNode = createSVGNode(u);
+      if(svgNode.nodeName === "foreignObject") {
+        svgNode.setAttribute("x", -(u.attrs.width / 2 + u.attrs.strokeWidth / 2));
+        svgNode.setAttribute("y",  -(u.attrs.height / 2 + u.attrs.strokeWidth / 2));
+        svgNode.setAttribute("width", u.attrs.width);
+        svgNode.setAttribute("height", u.attrs.height);
+      }
+      group.appendChild(svgNode);
     });
   }
 
@@ -1485,6 +1491,32 @@ function createSVGElement(tag) {
  * Performs some of the common rendering that is used by both preLayout and
  * render.
  */
+function createSVGNode(node, x){
+  if(node.attrs.label[0] === '<') {
+    return createHTMLNode(node);
+  } else {
+    return createTextNode(node, x);
+  }
+}
+
+function createHTMLNode(node){
+  var fo = createSVGElement("foreignObject");
+  var div = document.createElementNS("http://www.w3.org/1999/xhtml", "div");
+  div.innerHTML = node.attrs.label;
+  div.setAttribute("id", "temporaryDiv");
+  var body = document.getElementsByTagName('body')[0];
+  body.appendChild(div);
+  var td = document.getElementById("temporaryDiv");
+  td.setAttribute("style", "width:10;float:left;");
+  fo.setAttribute("width", td.clientWidth);
+  fo.setAttribute("height", td.clientHeight);
+  body.removeChild(td);
+  div.setAttribute("id", "");
+
+  fo.appendChild(div);
+  return fo;
+}
+
 function createTextNode(node, x) {
   var fontSize = node.attrs.fontSize;
   var text = createSVGElement("text");
