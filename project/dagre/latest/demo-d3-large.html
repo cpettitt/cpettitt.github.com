@@ -1,0 +1,132 @@
+<!doctype html>
+
+<meta charset="utf-8">
+<title>Dagre Test Page</title>
+
+<h2>Graph Visualization</h2>
+
+<p>The graph is quite large. Scroll down and / or to the right to see it.
+
+<svg width=0 height=0>
+  <defs>
+    <marker id="arrowhead"
+            viewBox="0 0 10 10"
+            refX="8"
+            refY="5"
+            markerUnits="strokeWidth"
+            markerWidth="8"
+            markerHeight="5"
+            orient="auto"
+            style="fill: #333">
+      <path d="M 0 0 L 10 5 L 0 10 z"></path>
+    </marker>
+  </defs>
+</svg>
+
+<script src="http://d3js.org/d3.v2.min.js"></script>
+<script src="http://cpettitt.github.com/project/dagre/latest/dagre.js"></script>
+
+<style>
+.node rect {
+  stroke-width: 1.5px;
+  stroke: #333;
+  fill: #fff;
+}
+
+path.edge {
+  fill: none;
+  stroke: #333;
+  stroke-width: 1.5px;
+}
+</style>
+
+<script>
+  var nodePadding = 10;
+
+  d3.json("miserables.json", function(json) {
+    var colocations = json.links;
+
+    // Get the data in the right form
+    var characters = json.nodes;
+    colocations.forEach(function(d) {
+      d.source = json.nodes[d.source];
+      d.target = json.nodes[d.target];
+    });
+
+    // Now start laying things out
+    var svg = d3.select("svg");
+    var svgGroup = svg.append("g").attr("transform", "translate(5, 5)");
+
+    // `nodes` is center positioned for easy layout later
+    var nodes = svgGroup
+      .selectAll("g .node")
+      .data(characters)
+      .enter()
+        .append("g")
+        .attr("class", "node");
+
+    var edges = svgGroup
+      .selectAll("path .edge")
+      .data(colocations)
+      .enter()
+        .append("path")
+        .attr("class", "edge")
+        .attr("marker-end", "url(#arrowhead)");
+
+    // Append rectangles to the nodes. We do this before laying out the text
+    // because we want the text above the rectangle.
+    var rects = nodes.append("rect");
+
+    // Append text
+    var labels = nodes
+      .append("text")
+        .attr("text-anchor", "middle")
+        .attr("x", 0);
+
+    labels
+      .append("tspan")
+      .attr("x", 0)
+      .attr("dy", "1em")
+      .text(function(d) { return d.name; });
+
+    // We need width and height for layout.
+    labels.each(function(d) {
+      var bbox = this.getBBox();
+      d.bbox = bbox;
+      d.width = bbox.width + 2 * nodePadding;
+      d.height = bbox.height + 2 * nodePadding;
+    });
+
+    rects
+      .attr("x", function(d) { return -(d.bbox.width / 2 + nodePadding); })
+      .attr("y", function(d) { return -(d.bbox.height / 2 + nodePadding); })
+      .attr("width", function(d) { return d.width; })
+      .attr("height", function(d) { return d.height; });
+
+    labels
+      .attr("x", function(d) { return -d.bbox.width / 2; })
+      .attr("y", function(d) { return -d.bbox.height / 2; });
+
+    dagre.layout()
+      .nodeSep(50)
+      .edgeSep(50)
+      .rankSep(100)
+      .nodes(characters)
+      .edges(colocations)
+      .run();
+
+    nodes.attr("transform", function(d) { return "translate(" + d.dagre.x + "," + d.dagre.y +")"; });
+
+    edges.attr("d", function(e) {
+      var points = e.dagre.points;
+      points.push(dagre.util.intersectRect(e.target.dagre, points.length > 0 ? points[points.length - 1] : e.source.dagre));
+      var origin = dagre.util.intersectRect(e.source.dagre, points[0]);
+      return "M" + dagre.util.pointStr(origin) + " L " + points.map(dagre.util.pointStr).join(" ");
+    });
+
+    // Resize the SVG element
+    var svgBBox = svg.node().getBBox();
+    svg.attr("width", svgBBox.width + 10);
+    svg.attr("height", svgBBox.height + 10);
+  });
+</script>
