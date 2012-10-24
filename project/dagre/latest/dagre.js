@@ -21,7 +21,7 @@ THE SOFTWARE.
 */
 (function() {
   dagre = {};
-dagre.version = "0.0.3";
+dagre.version = "0.0.4";
 /*
  * Directed multi-graph used during layout.
  */
