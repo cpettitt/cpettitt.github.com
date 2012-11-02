@@ -24,7 +24,7 @@
 </svg>
 
 <script src="http://d3js.org/d3.v2.min.js"></script>
-<script src="http://cpettitt.github.com/project/dagre/latest/dagre.js"></script>
+<script src="dagre.js"></script>
 
 <style>
 .node rect {
@@ -42,6 +42,20 @@ path.edge {
 
 <script>
   var nodePadding = 10;
+
+  function spline(points) {
+    var line = d3.svg.line()
+      .x(function(d) { return d.x; })
+      .y(function(d) { return d.y; })
+      .interpolate("basis")
+      (points);
+    var curves = line.split("C");
+    var last = curves.pop();
+    line = curves.join("C");
+    var points = last.split(",");
+    line += "L" + points.slice(points.length - 2).join(",");
+    return line;
+  }
 
   d3.json("miserables.json", function(json) {
     var colocations = json.links;
@@ -107,21 +121,27 @@ path.edge {
       .attr("x", function(d) { return -d.bbox.width / 2; })
       .attr("y", function(d) { return -d.bbox.height / 2; });
 
+    var startTime = new Date().getTime();
     dagre.layout()
       .nodeSep(50)
       .edgeSep(50)
-      .rankSep(100)
+      .rankSep(200)
       .nodes(characters)
       .edges(colocations)
+      .debugLevel(1)
       .run();
+    var endTime = new Date().getTime();
+    console.log("Layout time " + (endTime-startTime) + "ms");
 
     nodes.attr("transform", function(d) { return "translate(" + d.dagre.x + "," + d.dagre.y +")"; });
 
     edges.attr("d", function(e) {
       var points = e.dagre.points;
-      points.push(dagre.util.intersectRect(e.target.dagre, points.length > 0 ? points[points.length - 1] : e.source.dagre));
-      var origin = dagre.util.intersectRect(e.source.dagre, points[0]);
-      return "M" + dagre.util.pointStr(origin) + " L " + points.map(dagre.util.pointStr).join(" ");
+      var source = dagre.util.intersectRect(e.source.dagre, points.length > 0 ? points[0] : e.source.dagre);
+      var target = dagre.util.intersectRect(e.target.dagre, points.length > 0 ? points[points.length - 1] : e.source.dagre);
+      points.unshift(source);
+      points.push(target);
+      return spline(points);
     });
 
     // Resize the SVG element
