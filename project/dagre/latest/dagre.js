@@ -21,7 +21,7 @@ THE SOFTWARE.
 */
 (function() {
   dagre = {};
-dagre.version = "0.0.4";
+dagre.version = "0.0.6";
 /*
  * Directed multi-graph used during layout.
  */
@@ -36,7 +36,8 @@ dagre.graph = function() {
       inEdges = {},
       outEdges = {},
       edges = {},
-      graph = {};
+      graph = {},
+      idCounter = 0;
 
   graph.addNode = function(u, value) {
     if (graph.hasNode(u)) {
@@ -69,7 +70,10 @@ dagre.graph = function() {
     strictGetNode(source);
     strictGetNode(target);
 
-    if (graph.hasEdge(e)) {
+    if (e === null) {
+      e = "_ANON-" + ++idCounter;
+    }
+    else if (graph.hasEdge(e)) {
       throw new Error("Graph already has edge '" + e + "':\n" + graph.toString());
     }
 
@@ -132,6 +136,11 @@ dagre.graph = function() {
     }
   }
 
+  /*
+   * Return all edges with no arguments,
+   * the ones that are incident on a node (one argument),
+   * or all edges from a source to a target (two arguments)
+   */
   graph.edges = function(u, v) {
     var es, sourceEdges;
     if (!arguments.length) {
@@ -156,11 +165,17 @@ dagre.graph = function() {
     }
   }
 
+  /*
+   * Return all in edges to a target node
+   */
   graph.inEdges = function(target) {
     strictGetNode(target);
     return concat(values(inEdges[target]).map(function(es) { return keys(es.edges); }));
   };
 
+  /*
+   * Return all out edges from a source node
+   */
   graph.outEdges = function(source) {
     strictGetNode(source);
     return concat(values(outEdges[source]).map(function(es) { return keys(es.edges); }));
@@ -231,16 +246,20 @@ dagre.graph = function() {
 }
 dagre.layout = function() {
   // External configuration
-  var
+  var config = {
       // Nodes to lay out. At minimum must have `width` and `height` attributes.
-      nodes = [],
+      nodes: [],
       // Edges to lay out. At mimimum must have `source` and `target` attributes.
-      edges = [],
+      edges: [],
       // How much debug information to include?
-      debugLevel = 0;
+      debugLevel: 0,
+  };
+
+  var timer = createTimer();
 
   // Phase functions
   var
+      acyclic = dagre.layout.acyclic(),
       rank = dagre.layout.rank(),
       order = dagre.layout.order(),
       position = dagre.layout.position();
@@ -248,63 +267,76 @@ dagre.layout = function() {
   // This layout object
   var self = {};
 
-  self.nodes = function(x) {
-    if (!arguments.length) return nodes;
-    nodes = x;
-    return self;
-  };
+  self.nodes = propertyAccessor(self, config, "nodes");
+  self.edges = propertyAccessor(self, config, "edges");
 
-  self.edges = function(x) {
-    if (!arguments.length) return edges;
-    edges = x;
-    return self;
-  };
+  self.orderIters = delegateProperty(order.iterations);
 
-  self.orderIters = function(x) {
-    if (!arguments.length) return order.iterations();
-    order.iterations(x);
-    return self;
-  }
+  self.nodeSep = delegateProperty(position.nodeSep);
+  self.edgeSep = delegateProperty(position.edgeSep);
+  self.rankSep = delegateProperty(position.rankSep);
+  self.rankDir = delegateProperty(position.rankDir);
+  self.debugAlignment = delegateProperty(position.debugAlignment);
 
-  self.nodeSep = function(x) {
-    if (!arguments.length) return position.nodeSep();
-    position.nodeSep(x);
-    return self;
-  };
-
-  self.edgeSep = function(x) {
-    if (!arguments.length) return position.edgeSep();
-    position.edgeSep(x);
-    return self;
-  }
-
-  self.rankSep = function(x) {
-    if (!arguments.length) return position.rankSep();
-    position.rankSep(x);
-    return self;
-  }
-
-  self.posDir = function(x) {
-    if (!arguments.length) return position.direction();
-    position.direction(x);
-    return self;
-  }
-
-  self.debugLevel = function(x) {
-    if (!arguments.length) return debugLevel;
-    debugLevel = x;
+  self.debugLevel = propertyAccessor(self, config, "debugLevel", function(x) {
+    timer.enabled(x);
+    acyclic.debugLevel(x);
     rank.debugLevel(x);
     order.debugLevel(x);
     position.debugLevel(x);
-    return self;
+  });
+
+  self.run = timer.wrap("Total layout", run);
+
+  return self;
+
+  // Build graph and save mapping of generated ids to original nodes and edges
+  function init() {
+    var g = dagre.graph();
+    var nextId = 0;
+
+    // Tag each node so that we can properly represent relationships when
+    // we add edges. Also copy relevant dimension information.
+    config.nodes.forEach(function(u) {
+      var id = "id" in u ? u.id : "_N" + nextId++;
+      u.dagre = { id: id, width: u.width, height: u.height };
+      g.addNode(id, u.dagre);
+    });
+
+    config.edges.forEach(function(e) {
+      var source = e.source.dagre.id;
+      if (!g.hasNode(source)) {
+        throw new Error("Source node for '" + e + "' not in node list");
+      }
+
+      var target = e.target.dagre.id;
+      if (!g.hasNode(target)) {
+        throw new Error("Target node for '" + e + "' not in node list");
+      }
+
+      e.dagre = {
+        points: []
+      };
+
+      // Track edges that aren't self loops - layout does nothing for self
+      // loops, so they can be skipped.
+      if (source !== target) {
+        var id = "id" in e ? e.id : "_E" + nextId++;
+        e.dagre.id = id;
+        e.dagre.minLen = e.minLen || 1;
+        e.dagre.width = e.width || 0;
+        e.dagre.height = e.height || 0;
+        g.addEdge(id, source, target, e.dagre);
+      }
+    });
+
+    return g;
   }
 
-  self.run = function() {
-    var timer = createTimer();
-    
+  function run () {
     var rankSep = self.rankSep();
     try {
-      if (!nodes.length) {
+      if (!config.nodes.length) {
         return;
       }
 
@@ -319,7 +351,7 @@ dagre.layout = function() {
 
       // Reverse edges to get an acyclic graph, we keep the graph in an acyclic
       // state until the very end.
-      acyclic(g);
+      acyclic.run(g);
 
       // Determine the rank for each node. Nodes with a lower rank will appear
       // above nodes of higher rank.
@@ -340,129 +372,47 @@ dagre.layout = function() {
       // original long edges with coordinate information.
       undoNormalize(g);
 
+      // Reverses points for edges that are in a reversed state.
+      fixupEdgePoints(g);
+
       // Reverse edges that were revered previously to get an acyclic graph.
-      undoAcyclic(g);
+      acyclic.undo(g);
     } finally {
       self.rankSep(rankSep);
-
-      if (debugLevel >= 1) {
-        console.log("Total layout time: " + timer.elapsedString());
-      }
-    }
-  };
-
-  return self;
-
-  // Build graph and save mapping of generated ids to original nodes and edges
-  function init() {
-    var g = dagre.graph();
-
-    var nextId = 0;
-
-    // Tag each node so that we can properly represent relationships when
-    // we add edges. Also copy relevant dimension information.
-    nodes.forEach(function(u) {
-      var id = "id" in u ? u.id : "_N" + nextId++;
-      u.dagre = { id: id, width: u.width, height: u.height };
-      g.addNode(id, u.dagre);
-    });
-
-    edges.forEach(function(e) {
-      var source = e.source.dagre.id;
-      if (!g.hasNode(source)) {
-        throw new Error("Source node for '" + e + "' not in node list");
-      }
-
-      var target = e.target.dagre.id;
-      if (!g.hasNode(target)) {
-        throw new Error("Target node for '" + e + "' not in node list");
-      }
-
-      e.dagre = {
-        points: []
-      };
-
-      // Track edges that aren't self loops - layout does nothing for self
-      // loops, so they can be skipped.
-      if (source !== target) {
-        var id = "id" in e ? e.id : "_E" + nextId++;
-        e.dagre.minLen = e.minLen || 1;
-        e.dagre.width = e.width || 0;
-        e.dagre.height = e.height || 0;
-        g.addEdge(id, source, target, e.dagre);
-      }
-    });
-
-    return g;
-  }
-
-  function acyclic(g) {
-    var onStack = {};
-    var visited = {};
-
-    function dfs(u) {
-      if (u in visited)
-        return;
-
-      visited[u] = true;
-      onStack[u] = true;
-      g.outEdges(u).forEach(function(e) {
-        var v = g.target(e);
-        if (v in onStack) {
-          var edge = g.edge(e);
-          g.delEdge(e);
-          edge.reversed = true;
-          g.addEdge(e, v, u, edge);
-        } else {
-          dfs(v);
-        }
-      });
-
-      delete onStack[u];
     }
 
-    g.eachNode(function(u) {
-      dfs(u);
-    });
-  }
-
-  function undoAcyclic(g) {
-    g.eachEdge(function(e, source, target, edge) {
-      if (edge.reversed) {
-        delete edge.reversed;
-
-        // Reverse the points array because it was populated for the reversed
-        // edge.
-        edge.points.reverse();
-        g.delEdge(e);
-        g.addEdge(e, target, source, edge);
-      }
-    });
+    return self;
   }
 
   // Assumes input graph has no self-loops and is otherwise acyclic.
   function normalize(g) {
-    g.eachEdge(function(e, source, target) {
-      var sourceRank = g.node(source).rank;
-      var targetRank = g.node(target).rank;
+    var dummyCount = 0;
+    g.eachEdge(function(e, s, t, a) {
+      var sourceRank = g.node(s).rank;
+      var targetRank = g.node(t).rank;
       if (sourceRank + 1 < targetRank) {
-        var prefix = "_D-" + e + "-";
-        for (var u = source, rank = sourceRank + 1, i = 0; rank < targetRank; ++rank, ++i) {
-          var v = prefix + rank;
-          var node = { width: g.edge(e).width,
-                       height: g.edge(e).height,
-                       edgeId: e,
-                       edge: g.edge(e),
-                       source: g.source(e),
-                       target: g.target(e),
-                       index: i,
-                       rank: rank,
-                       dummy: true };
+        for (var u = s, rank = sourceRank + 1, i = 0; rank < targetRank; ++rank, ++i) {
+          var v = "_D" + ++dummyCount;
+          var node = {
+            width: a.width,
+            height: a.height,
+            edge: { id: e, source: s, target: t, attrs: a },
+            rank: rank,
+            dummy: true
+          };
+
+          // If this node represents a bend then we will use it as a control
+          // point. For edges with 2 segments this will be the center dummy
+          // node. For edges with more than two segments, this will be the
+          // first and last dummy node.
+          if (i === 0) node.index = 0;
+          else if (rank + 1 === targetRank) node.index = 1;
+
           g.addNode(v, node);
-          g.addEdge(u + " -> " + v, u, v, {});
+          g.addEdge(null, u, v, {});
           u = v;
         }
-        g.addEdge(u + " -> " + target, u, target, {});
+        g.addEdge(null, u, t, {});
         g.delEdge(e);
       }
     });
@@ -471,48 +421,118 @@ dagre.layout = function() {
   function undoNormalize(g) {
     var visited = {};
 
-    g.eachNode(function(u, node) {
-      if (node.dummy) {
-        if (!g.hasEdge(node.edgeId)) {
-          g.addEdge(node.edgeId, node.source, node.target, node.edge);
+    g.eachNode(function(u, a) {
+      if (a.dummy && "index" in a) {
+        var edge = a.edge;
+        if (!g.hasEdge(edge.id)) {
+          g.addEdge(edge.id, edge.source, edge.target, edge.attrs);
         }
-        var points = g.edge(node.edgeId).points;
-        points[node.index] = { x: node.x, y: node.y };
+        var points = g.edge(edge.id).points;
+        points[a.index] = { x: a.x, y: a.y };
         g.delNode(u);
       }
     });
   }
+
+  function fixupEdgePoints(g) {
+    g.eachEdge(function(e, s, t, a) { if (a.reversed) a.points.reverse(); });
+  }
+
+  function delegateProperty(f) {
+    return function() {
+      if (!arguments.length) return f();
+      f.apply(null, arguments);
+      return self;
+    }
+  }
 }
-dagre.layout.rank = function() {
+dagre.layout.acyclic = function() {
   // External configuration
-  var
-    // Level 1: log time spent
-    debugLevel = 0;
+  var config = {
+    debugLevel: 0
+  }
+
+  var timer = createTimer();
 
   var self = {};
 
-  self.debugLevel = function(x) {
-    if (!arguments.length) return debugLevel;
-    debugLevel = x;
-    return self;
+  self.debugLevel = propertyAccessor(self, config, "debugLevel", function(x) {
+    timer.enabled(x);
+  });
+
+  self.run = timer.wrap("Acyclic Phase", run);
+
+  self.undo = function(g) {
+    g.eachEdge(function(e, s, t, a) {
+      if (a.reversed) {
+        delete a.reversed;
+        g.delEdge(e);
+        g.addEdge(e, t, s, a);
+      }
+    });
   }
 
-  self.run = function(g) {
-    var timer = createTimer();
+  return self;
 
+  function run(g) {
+    var onStack = {},
+        visited = {},
+        reverseCount = 0;
+
+    function dfs(u) {
+      if (u in visited) return;
+
+      visited[u] = onStack[u] = true;
+      g.outEdges(u).forEach(function(e) {
+        var t = g.target(e),
+            a;
+
+        if (t in onStack) {
+          a = g.edge(e);
+          g.delEdge(e);
+          a.reversed = true;
+          ++reverseCount;
+          g.addEdge(e, t, u, a);
+        } else {
+          dfs(t);
+        }
+      });
+
+      delete onStack[u];
+    }
+
+    g.eachNode(function(u) { dfs(u); });
+
+    if (config.debugLevel >= 2) console.log("Acyclic Phase: reversed " + reverseCount + " edge(s)");
+  }
+};
+dagre.layout.rank = function() {
+  // External configuration
+  var config = {
+    debugLevel: 0
+  };
+
+  var timer = createTimer();
+
+  var self = {};
+
+  self.debugLevel = propertyAccessor(self, config, "debugLevel", function(x) {
+    timer.enabled(x);
+  });
+
+  self.run = timer.wrap("Rank Phase", run);
+
+  return self;
+
+  function run(g) {
     initRank(g);
     components(g).forEach(function(cmpt) {
       var subgraph = g.subgraph(cmpt);
       feasibleTree(subgraph);
       normalize(subgraph);
     });
-
-    if (debugLevel >= 1) {
-      console.log("Rank phase time: " + timer.elapsedString());
-    }
   };
 
-  return self;
 
   function initRank(g) {
     var minRank = {};
@@ -585,48 +605,43 @@ dagre.layout.rank = function() {
   }
 }
 dagre.layout.order = function() {
-  // External configuration
-  var
-    // Maximum number of passes to make
-    iterations = 24,
+  var config = {
+    iterations: 24, // max number of iterations
+    debugLevel: 0
+  };
 
-    // Level 1: log time spent and best cross count found
-    // Level 2: log cross count on each iteration
-    debugLevel = 0;
+  var timer = createTimer();
 
   var self = {};
 
-  self.iterations = function(x) {
-    if (!arguments.length) return iterations;
-    iterations = x;
-    return self;
-  }
+  self.iterations = propertyAccessor(self, config, "iterations");
 
-  self.debugLevel = function(x) {
-    if (!arguments.length) return debugLevel;
-    debugLevel = x;
-    return self;
-  }
+  self.debugLevel = propertyAccessor(self, config, "debugLevel", function(x) {
+    timer.enabled(x);
+  });
 
-  self.run = function(g) {
-    var timer = createTimer();
+  self.run = timer.wrap("Order Phase", run);
 
+  return self;
+
+  function run(g) {
     var layering = initOrder(g);
     var bestLayering = copyLayering(layering);
     var bestCC = crossCount(g, layering);
 
-    if (debugLevel >= 2) {
+    if (config.debugLevel >= 2) {
       console.log("Order phase start cross count: " + bestCC);
     }
 
-    var cc;
-    for (var i = 0; i < iterations; ++i) {
-      cc = barycenterLayering(g, i, layering);
+    var cc, i, lastBest;
+    for (i = 0, lastBest = 0; lastBest < 4 && i < config.iterations; ++i, ++lastBest) {
+      cc = sweep(g, i, layering);
       if (cc < bestCC) {
         bestLayering = copyLayering(layering);
         bestCC = cc;
+        lastBest = 0;
       }
-      if (debugLevel >= 2) {
+      if (config.debugLevel >= 3) {
         console.log("Order phase iter " + i + " cross count: " + bestCC);
       }
     }
@@ -637,60 +652,63 @@ dagre.layout.order = function() {
       });
     });
 
-    if (debugLevel >= 1) {
-      console.log("Order phase time: " + timer.elapsedString());
+    if (config.debugLevel >= 2) {
+      console.log("Order iterations: " + i);
       console.log("Order phase best cross count: " + bestCC);
     }
 
     return bestLayering;
   }
 
-  return self;
-
   function initOrder(g) {
     var layering = [];
-    var visited = {};
-
-    function dfs(u) {
-      if (u in visited) {
-        return;
-      }
-      visited[u] = true;
-
-      var rank = g.node(u).rank;
-      for (var i = layering.length; i <= rank; ++i) {
-        layering[i] = [];
-      }
-      layering[rank].push(u);
-
-      g.neighbors(u).forEach(function(v) {
-        dfs(v);
-      });
-    }
-
-    var nodes = g.nodes().sort(function(x, y) {
-      return g.node(x).rank - g.node(y).rank;
+    g.eachNode(function(n, a) {
+      var layer = layering[a.rank] || (layering[a.rank] = []);
+      layer.push(n);
     });
-
-    nodes.forEach(function(u) {
-      dfs(u);
-    });
-
     return layering;
   }
 
-  function barycenterLayering(g, i, layering) {
-    var cc = 0;
-    if (i % 2 === 0) {
-      for (var j = 1; j < layering.length; ++j) {
-        cc += barycenterLayer(g, i, layering[j - 1], layering[j], "inEdges");
+  /*
+   * Returns a function that will return the predecessors for a node. This
+   * function differs from `g.predecessors(u)` in that a predecessor appears
+   * for each incident edge (`g.predecessors(u)` treats predecessors as a set).
+   * This allows pseudo-weighting of predecessor nodes.
+   */
+  function multiPredecessors(g) {
+    return function(u) {
+      var preds = [];
+      g.inEdges(u).forEach(function(e) {
+        preds.push(g.source(e));
+      });
+      return preds;
+    }
+  }
+
+  /*
+   * Same as `multiPredecessors(g)` but for successors.
+   */
+  function multiSuccessors(g) {
+    return function(u) {
+      var sucs = [];
+      g.outEdges(u).forEach(function(e) {
+        sucs.push(g.target(e));
+      });
+      return sucs;
+    }
+  }
+
+  function sweep(g, iter, layering) {
+    if (iter % 2 === 0) {
+      for (var i = 1; i < layering.length; ++i) {
+        barycenterLayer(layering[i - 1], layering[i], multiPredecessors(g));
       }
     } else {
-      for (var j = layering.length - 2; j >= 0; --j) {
-        cc += barycenterLayer(g, i, layering[j + 1], layering[j], "outEdges");
+      for (var i = layering.length - 2; i >= 0; --i) {
+        barycenterLayer(layering[i + 1], layering[i], multiSuccessors(g));
       }
     }
-    return cc;
+    return crossCount(g, layering);
   }
 
   /*
@@ -700,38 +718,19 @@ dagre.layout.order = function() {
    *
    * This algorithm is based on the barycenter method.
    */
-  function barycenterLayer(g, i, fixed, movable, neighbors) {
-    var weights = rankWeights(g, fixed, movable, neighbors);
+  function barycenterLayer(fixed, movable, predecessors) {
+    var pos = layerPos(movable);
+    var bs = barycenters(fixed, movable, predecessors);
 
-    var toSort = [];
-
-    movable.forEach(function(u, i) {
-      var weight = weights[u];
-      if (weight !== -1) {
-        toSort.push({node: u, weight: weight, pos: i});
-      }
+    var toSort = movable.slice(0).sort(function(x, y) {
+      return bs[x] - bs[y] || pos[x] - pos[y];
     });
 
-    toSort.sort(function(x, y) {
-      var d = x.weight - y.weight;
-      if (d === 0) {
-        return x.pos - y.pos;
-      }
-      return d;
-    });
-
-    var toSortIndex = 0;
-    for (var i = 0; i < movable.length; ++i) {
-      var u = movable[i];
-      var weight = weights[u];
-      if (weight !== -1) {
-        movable[i] = toSort[toSortIndex++].node;
+    for (var i = movable.length - 1; i >= 0; --i) {
+      if (bs[movable[i]] !== -1) {
+        movable[i] = toSort.pop();
       }
     }
-
-    return neighbors === "inEdges"
-      ? bilayerCrossCount(g, fixed, movable)
-      : bilayerCrossCount(g, movable, fixed);
   }
 
   /*
@@ -739,27 +738,22 @@ dagre.layout.order = function() {
    * return weights for the movable layer that can be used to reorder the layer
    * for potentially reduced edge crossings.
    */
-  function rankWeights(g, fixed, movable, neighbors) {
-    var fixedPos = {};
-    fixed.forEach(function(u, i) { fixedPos[u] = i; });
+  function barycenters(fixed, movable, predecessors) {
+    var pos = layerPos(fixed), // Position of node in fixed list
+        bs = {};               // Barycenters for each node
 
-    var weights = {};
     movable.forEach(function(u) {
-      var weight = -1;
-      var edges = g[neighbors](u);
-      if (edges.length > 0) {
-        weight = 0;
-        edges.forEach(function(e) {
-          var source = g.source(e);
-          var neighborId = g.source(e) === u ? g.target(e) : source;
-          weight += fixedPos[neighborId];
-        });
-        weight = weight / edges.length;
+      var b = -1;
+      var preds = predecessors(u);
+      if (preds.length > 0) {
+        b = 0;
+        preds.forEach(function(v) { b += pos[v]; });
+        b = b / preds.length;
       }
-      weights[u] = weight;
+      bs[u] = b;
     });
 
-    return weights;
+    return bs;
   }
 
   function copyLayering(layering) {
@@ -785,27 +779,19 @@ var crossCount = dagre.layout.order.crossCount = function(g, layering) {
  *
  *    W. Barth et al., Bilayer Cross Counting, JGAA, 8(2) 179–194 (2004)
  */
-var bilayerCrossCount = dagre.layout.order.bilayerCrossCount = function(g, layer1, layer2, weightFunc) {
-  if (!weightFunc) { weightFunc = function() { return 1; }; }
+var bilayerCrossCount = dagre.layout.order.bilayerCrossCount = function(g, layer1, layer2) {
+  var layer2Pos = layerPos(layer2);
 
-  var layer2Pos = {};
-  layer2.forEach(function(u, i) { layer2Pos[u] = i; });
-
-  var edges = [];
+  var indices = [];
   layer1.forEach(function(u) {
-    var nodeEdges = [];
-    g.outEdges(u).forEach(function(e) {
-      nodeEdges.push({ edge: e, pos: layer2Pos[g.target(e)] });
-    });
-    // TODO consider radix sort
-    nodeEdges.sort(function(x, y) { return x.pos - y.pos; });
-    edges = edges.concat(nodeEdges);
+    var nodeIndices = [];
+    g.outEdges(u).forEach(function(e) { nodeIndices.push(layer2Pos[g.target(e)]); });
+    nodeIndices.sort(function(x, y) { return x - y; });
+    indices = indices.concat(nodeIndices);
   });
 
   var firstIndex = 1;
-  while (firstIndex < layer2.length) {
-    firstIndex <<= 1;
-  }
+  while (firstIndex < layer2.length) firstIndex <<= 1;
 
   var treeSize = 2 * firstIndex - 1;
   firstIndex -= 1;
@@ -814,22 +800,26 @@ var bilayerCrossCount = dagre.layout.order.bilayerCrossCount = function(g, layer
   for (var i = 0; i < treeSize; ++i) { tree[i] = 0; }
 
   var cc = 0;
-  edges.forEach(function(edge) {
-    var edgeWeight = weightFunc(edge.edge);
-    var treeIndex = edge.pos + firstIndex;
-    tree[treeIndex] += edgeWeight;
+  indices.forEach(function(i) {
+    var treeIndex = i + firstIndex;
+    ++tree[treeIndex];
     var weightSum = 0;
     while (treeIndex > 0) {
       if (treeIndex % 2) {
-        weightSum += tree[treeIndex + 1];
+        cc += tree[treeIndex + 1];
       }
       treeIndex = (treeIndex - 1) >> 1;
-      tree[treeIndex] += edgeWeight;
+      ++tree[treeIndex];
     }
-    cc += edgeWeight * weightSum;
   });
 
   return cc;
+}
+
+function layerPos(layer) {
+  var pos = {};
+  layer.forEach(function(u, i) { pos[u] = i; });
+  return pos;
 }
 /*
  * The algorithms here are based on Brandes and Köpf, "Fast and Simple
@@ -837,177 +827,143 @@ var bilayerCrossCount = dagre.layout.order.bilayerCrossCount = function(g, layer
  */
 dagre.layout.position = function() {
   // External configuration
-  var
-    nodeSep = 50,
-    edgeSep = 10,
-    rankSep = 30,
-    direction = null,
-    // Level 1: log time spent
-    debugLevel = 0;
+  var config = {
+    nodeSep: 50,
+    edgeSep: 10,
+    rankSep: 30,
+    rankDir: "TB",
+    debugAlignment: null,
+    debugLevel: 0
+  };
+
+  var timer = createTimer();
 
   var self = {};
 
-  self.nodeSep = function(x) {
-    if (!arguments.length) return nodeSep;
-    nodeSep = x;
-    return self;
-  };
+  self.nodeSep = propertyAccessor(self, config, "nodeSep");
+  self.edgeSep = propertyAccessor(self, config, "edgeSep");
+  self.rankSep = propertyAccessor(self, config, "rankSep");
+  self.rankDir = propertyAccessor(self, config, "rankDir");
+  self.debugAlignment = propertyAccessor(self, config, "debugAlignment");
+  self.debugLevel = propertyAccessor(self, config, "debugLevel", function(x) {
+    timer.enabled(x);
+  });
 
-  self.edgeSep = function(x) {
-    if (!arguments.length) return edgeSep;
-    edgeSep = x;
-    return self;
-  };
+  self.run = timer.wrap("Position Phase", run);
 
-  self.rankSep = function(x) {
-    if (!arguments.length) return rankSep;
-    rankSep = x;
-    return self;
-  };
+  return self;
 
-  self.direction = function(x) {
-    if (!arguments.length) return direction;
-    direction = x;
-    return self;
-  };
-
-  self.debugLevel = function(x) {
-    if (!arguments.length) return debugLevel;
-    debugLevel = x;
-    return self;
-  };
-
-  self.run = function(g) {
-    var timer = createTimer();
-
+  function run(g) {
     var layering = [];
     g.eachNode(function(u, node) {
       var layer = layering[node.rank] || (layering[node.rank] = []);
       layer[node.order] = u;
     });
 
-    var type1Conflicts = findType1Conflicts(g, layering);
+    var conflicts = findConflicts(g, layering);
 
     var xss = {};
     ["up", "down"].forEach(function(vertDir) {
-      if (vertDir === "down") { layering.reverse(); }
+      if (vertDir === "down") layering.reverse();
 
       ["left", "right"].forEach(function(horizDir) {
-        if (horizDir === "right") { reverseInnerOrder(layering); }
+        if (horizDir === "right") reverseInnerOrder(layering);
 
         var dir = vertDir + "-" + horizDir;
-        if (!direction || direction === dir) {
-          var align = verticalAlignment(g, layering, type1Conflicts, vertDir === "up" ? "predecessors" : "successors");
+        if (!config.debugAlignment || config.debugAlignment === dir) {
+          var align = verticalAlignment(g, layering, conflicts, vertDir === "up" ? "predecessors" : "successors");
           xss[dir]= horizontalCompaction(g, layering, align.pos, align.root, align.align);
-          if (horizDir === "right") { flipHorizontally(layering, xss[dir]); }
+          if (horizDir === "right") flipHorizontally(layering, xss[dir]);
         }
 
-        if (horizDir === "right") { reverseInnerOrder(layering); }
+        if (horizDir === "right") reverseInnerOrder(layering);
       });
 
-      if (vertDir === "down") { layering.reverse(); }
+      if (vertDir === "down") layering.reverse();
     });
 
-    if (direction) {
+    if (config.debugAlignment) {
       // In debug mode we allow forcing layout to a particular alignment.
-      g.eachNode(function(u, node) {
-        node.x = xss[direction][u];
-      });
+      g.eachNode(function(u, node) { x(g, u, xss[config.debugAlignment][u]); });
     } else {
-      alignToSmallest(g, layering, xss);
-
-      // Find average of medians for xss array
-      g.eachNode(function(u, node) {
-        var xs = values(xss).map(function(xs) { return xs[u]; }).sort(function(x, y) { return x - y; });
-        node.x = (xs[1] + xs[2]) / 2;
-      });
+      balance(g, layering, xss);
     }
 
-    // Align min center point with 0
-    var minX = min(g.nodes().map(function(u) { return g.node(u).x - g.node(u).width / 2; }));
-    g.eachNode(function(u, node) {
-      node.x -= minX;
-    });
+    // Translate layout so left edge of bounding rectangle has coordinate 0
+    var minX = min(g.nodes().map(function(u) { return x(g, u) - width(g, u) / 2; }));
+    g.eachNode(function(u) { x(g, u, x(g, u) - minX); });
 
     // Align y coordinates with ranks
     var posY = 0;
     layering.forEach(function(layer) {
-      var height = max(layer.map(function(u) { return g.node(u).height; }));
-      posY += height / 2;
-      layer.forEach(function(u) {
-        g.node(u).y = posY;
-      });
-      posY += height / 2 + rankSep;
+      var maxHeight = max(layer.map(function(u) { return height(g, u); }));
+      posY += maxHeight / 2;
+      layer.forEach(function(u) { y(g, u, posY); });
+      posY += maxHeight / 2 + config.rankSep;
     });
-
-    if (debugLevel >= 1) {
-      console.log("Position phase time: " + timer.elapsedString());
-    }
   };
 
-  return self;
+  /*
+   * Generate an ID that can be used to represent any undirected edge that is
+   * incident on `u` and `v`.
+   */
+  function undirEdgeId(u, v) {
+    return u < v
+      ? u.toString().length + ":" + u + "-" + v
+      : v.toString().length + ":" + v + "-" + u;
+  }
 
-  function findType1Conflicts(g, layering) {
-    var type1Conflicts = {};
+  function findConflicts(g, layering) {
+    var conflicts = {}, // Set of conflicting edge ids
+        pos = {};       // Position of node in its layer
 
-    var pos = {};
-    layering[0].forEach(function(u, i) {
-      pos[u] = i;
-    });
+    if (layering.length <= 2) return conflicts;
 
-    for (var i = 1; i < layering.length; ++i) {
-      var layer = layering[i];
+    layering[1].forEach(function(u, i) { pos[u] = i; });
+    for (var i = 1; i < layering.length - 1; ++i) {
+      prevLayer = layering[i];
+      currLayer = layering[i+1];
+      var k0 = 0; // Position of the last inner segment in the previous layer
+      var l = 0;  // Current position in the current layer (for iteration up to `l1`)
 
-      // Position of last inner segment in the previous layer
-      var innerLeft = 0;
-      var currIdx = 0;
+      // Scan current layer for next node that is incident to an inner segement
+      // between layering[i+1] and layering[i].
+      for (var l1 = 0; l1 < currLayer.length; ++l1) {
+        var u = currLayer[l1]; // Next inner segment in the current layer or
+                               // last node in the current layer
+        pos[u] = l1;
 
-      // Scan current layer for next node with an inner segment.
-      for (var j = 0; j < layer.length; ++j) {
-        var u = layer[j];
-        // Update positions map for next layer iteration
-        pos[u] = j;
-
-        // Search for the next inner segment in the previous layer
-        var innerRight = null;
+        var k1 = undefined; // Position of the next inner segment in the previous layer or
+                            // the position of the last element in the previous layer
         if (g.node(u).dummy) {
-          g.predecessors(u).some(function(v) {
-            if (g.node(v).dummy) {
-              innerRight = pos[v];
-              return true;
-            }
-            return false;
-          });
+          var uPred = g.predecessors(u)[0];
+          if (g.node(uPred).dummy)
+            k1 = pos[uPred];
         }
+        if (k1 === undefined && l1 === currLayer.length - 1)
+          k1 = prevLayer.length - 1;
 
-        // If no inner segment but at the end of the list we still
-        // need to check for type 1 conflicts with earlier segments
-        if (innerRight === null && j === layer.length - 1) {
-          innerRight = layering[i-1].length - 1;
-        }
-
-        if (innerRight !== null) {
-          for (;currIdx <= j; ++currIdx) {
-            var v = layer[currIdx];
-            g.inEdges(v).forEach(function(e) {
-              var sourcePos = pos[g.source(e)];
-              if (sourcePos < innerLeft || sourcePos > innerRight) {
-                type1Conflicts[e] = true;
-              }
+        if (k1 !== undefined) {
+          for (; l <= l1; ++l) {
+            g.predecessors(currLayer[l]).forEach(function(v) {
+              var k = pos[v];
+              if (k < k0 || k > k1)
+                conflicts[undirEdgeId(currLayer[l], v)] = true;
             });
           }
-          innerLeft = innerRight;
+          k0 = k1;
         }
       }
     }
 
-    return type1Conflicts;
+    return conflicts;
   }
 
-  function verticalAlignment(g, layering, type1Conflicts, relationship) {
-    var pos = {};
-    var root = {};
-    var align = {};
+  function verticalAlignment(g, layering, conflicts, relationship) {
+    var pos = {},   // Position for a node in its layer
+        root = {},  // Root of the block that the node participates in
+        align = {}; // Points to the next node in the block or, if the last
+                    // element in the block, points to the first block's root
 
     layering.forEach(function(layer) {
       layer.forEach(function(u, i) {
@@ -1020,17 +976,15 @@ dagre.layout.position = function() {
     layering.forEach(function(layer) {
       var prevIdx = -1;
       layer.forEach(function(v) {
-        var related = g[relationship](v);
+        var related = g[relationship](v), // Adjacent nodes from the previous layer
+            m;                            // The mid point in the related array
+
         if (related.length > 0) {
-          // TODO could find medians with linear algorithm if performance warrants it.
           related.sort(function(x, y) { return pos[x] - pos[y]; });
-          var mid = (related.length - 1) / 2;
+          mid = (related.length - 1) / 2;
           related.slice(Math.floor(mid), Math.ceil(mid) + 1).forEach(function(u) {
             if (align[v] === v) {
-              // TODO should we collapse multi-edges for vertical alignment?
-              
-              // Only need to check first returned edge for a type 1 conflict
-              if (!type1Conflicts[concat([g.edges(v, u), g.edges(u, v)])[0]] && prevIdx < pos[u]) {
+              if (!conflicts[undirEdgeId(u, v)] && prevIdx < pos[u]) {
                 align[u] = v;
                 align[v] = root[v] = root[u];
                 prevIdx = pos[u];
@@ -1048,28 +1002,26 @@ dagre.layout.position = function() {
    * Determines how much spacing u needs from its origin (center) to satisfy
    * width and node separation.
    */
-  function deltaX(u) {
-    var sep = u.dummy ? edgeSep : nodeSep;
-    return u.width / 2 + sep / 2;
+  function deltaX(g, u) {
+    var sep = g.node(u).dummy ? config.edgeSep : config.nodeSep;
+    return width(g, u) / 2 + sep / 2;
   }
 
+  // This function deviates from the standard BK algorithm in two ways. First
+  // it takes into account the size of the nodes. Second it includes a fix to
+  // the original algorithm that is described in Carstens, "Node and Label
+  // Placement in a Layered Layout Algorithm".
   function horizontalCompaction(g, layering, pos, root, align) {
-    // Mapping of node id -> sink node id for class
-    var sink = {};
-
-    // Mapping of sink node id -> x delta
-    var shift = {};
-
-    // Mapping of node id -> predecessor node (or null)
-    var pred = {};
-
-    // Calculated X positions
-    var xs = {};
+    var sink = {},  // Mapping of node id -> sink node id for class
+        shift = {}, // Mapping of sink node id -> x delta
+        pred = {},  // Mapping of node id -> predecessor node (or null)
+        xs = {};    // Calculated X positions
 
     layering.forEach(function(layer) {
       layer.forEach(function(u, i) {
         sink[u] = u;
-        pred[u] = i > 0 ? layer[i - 1] : null;
+        if (i > 0)
+          pred[u] = layer[i - 1];
       });
     });
 
@@ -1084,7 +1036,7 @@ dagre.layout.position = function() {
             if (sink[v] === v) {
               sink[v] = sink[u];
             }
-            var delta = deltaX(g.node(pred[w])) + deltaX(g.node(w));
+            var delta = deltaX(g, pred[w]) + deltaX(g, w);
             if (sink[v] !== sink[u]) {
               shift[sink[u]] = Math.min(shift[sink[u]] || Number.POSITIVE_INFINITY, xs[v] - xs[u] - delta);
             } else {
@@ -1101,25 +1053,13 @@ dagre.layout.position = function() {
       placeBlock(v);
     });
 
-    var prevShift = 0;
-    layering.forEach(function(layer) {
-      var s = shift[layer[0]];
-      if (s === undefined) {
-        s = 0;
-      }
-      prevShift = shift[layer[0]] = s + prevShift;
-    });
-
     // Absolute coordinates
     layering.forEach(function(layer) {
       layer.forEach(function(v) {
         xs[v] = xs[root[v]];
-        if (root[v] === v) {
-          var xDelta = shift[sink[v]];
-          if (xDelta < Number.POSITIVE_INFINITY) {
-            xs[v] += xDelta;
-          }
-        }
+        var xDelta = shift[sink[v]];
+        if (root[v] === v && xDelta < Number.POSITIVE_INFINITY)
+          xs[v] += xDelta;
       });
     });
 
@@ -1129,54 +1069,52 @@ dagre.layout.position = function() {
   function findMinCoord(g, layering, xs) {
     return min(layering.map(function(layer) {
       var u = layer[0];
-      return xs[u] - g.node(u).width / 2;
+      return xs[u] - width(g, u) / 2;
     }));
   }
 
   function findMaxCoord(g, layering, xs) {
     return max(layering.map(function(layer) {
       var u = layer[layer.length - 1];
-      return xs[u] - g.node(u).width / 2;
+      return xs[u] - width(g, u) / 2;
     }));
   }
 
-  function shiftX(delta, xs) {
-    Object.keys(xs).forEach(function(x) {
-      xs[x] += delta;
-    });
-  }
+  function balance(g, layering, xss) {
+    var min = {},                            // Min coordinate for the alignment
+        max = {},                            // Max coordinate for the alginment
+        smallestAlignment,
+        shift = {};                          // Amount to shift a given alignment
 
-  function alignToSmallest(g, layering, xss) {
-    // First find the smallest width
-    var smallestWidthMinCoord;
-    var smallestWidthMaxCoord;
-    var smallestWidth = Number.POSITIVE_INFINITY;
-    values(xss).forEach(function(xs) {
-      var minCoord = findMinCoord(g, layering, xs);
-      var maxCoord = findMaxCoord(g, layering, xs);
-      var width = maxCoord - minCoord;
-      if (width < smallestWidth) {
-        smallestWidthMinCoord = minCoord;
-        smallestWidthMaxCoord = maxCoord;
-        smallestWidth = width;
+    var smallest = Number.POSITIVE_INFINITY;
+    for (var alignment in xss) {
+      var xs = xss[alignment];
+      min[alignment] = findMinCoord(g, layering, xs);
+      max[alignment] = findMaxCoord(g, layering, xs);
+      var w = max[alignment] - min[alignment];
+      if (w < smallest) {
+        smallest = w;
+        smallestAlignment = alignment;
       }
-    });
+    }
 
-    // Realign coordinates with smallest width
+    // Determine how much to adjust positioning for each alignment
     ["up", "down"].forEach(function(vertDir) {
-      var xs = xss[vertDir + "-left"];
-      var delta = smallestWidthMinCoord - findMinCoord(g, layering, xs);
-      if (delta) {
-        shiftX(delta, xs);
-      }
+      ["left", "right"].forEach(function(horizDir) {
+        var alignment = vertDir + "-" + horizDir;
+        shift[alignment] = horizDir === "left"
+            ? min[smallestAlignment] - min[alignment]
+            : max[smallestAlignment] - max[alignment];
+      });
     });
 
-    ["up", "down"].forEach(function(vertDir) {
-      var xs = xss[vertDir + "-right"];
-      var delta = smallestWidthMaxCoord - findMaxCoord(g, layering, xs);
-      if (delta) {
-        shiftX(delta, xs);
-      }
+    // Find average of medians for xss array
+    g.eachNode(function(v) {
+      var xs = [];
+      for (alignment in xss)
+        xs.push(xss[alignment][v] + shift[alignment]);
+      xs.sort(function(x, y) { return x - y; });
+      x(g, v, (xs[1] + xs[2]) / 2);
     });
   }
 
@@ -1191,6 +1129,56 @@ dagre.layout.position = function() {
     layering.forEach(function(layer) {
       layer.reverse();
     });
+  }
+
+  function width(g, u) {
+    switch (config.rankDir) {
+      case "LR": return g.node(u).height;
+      default:   return g.node(u).width;
+    }
+  }
+
+  function height(g, u) {
+    switch(config.rankDir) {
+      case "LR": return g.node(u).width;
+      default:   return g.node(u).height;
+    }
+  }
+
+  function x(g, u, x) {
+    switch (config.rankDir) {
+      case "LR":
+        if (arguments.length < 3) {
+          return g.node(u).y;
+        } else {
+          g.node(u).y = x;
+        }
+        break;
+      default:
+        if (arguments.length < 3) {
+          return g.node(u).x;
+        } else {
+          g.node(u).x = x;
+        }
+    }
+  }
+
+  function y(g, u, y) {
+    switch (config.rankDir) {
+      case "LR":
+        if (arguments.length < 3) {
+          return g.node(u).x;
+        } else {
+          g.node(u).x = y;
+        }
+        break;
+      default:
+        if (arguments.length < 3) {
+          return g.node(u).y;
+        } else {
+          g.node(u).y = y;
+        }
+    }
   }
 }
 dagre.util = {};
@@ -1359,15 +1347,36 @@ var pointStr = dagre.util.pointStr = function(point) {
 }
 
 var createTimer = function() {
-  var start = new Date().getTime();
-  var timer = {};
-  timer.elapsed = function() {
-    return new Date().getTime() - start;
-  }
-  timer.elapsedString = function() {
-    return timer.elapsed() + "ms";
-  }
-  return timer;
+  var self = {},
+      enabled = false;
+
+  self.enabled = function(x) {
+    if (!arguments.length) return enabled;
+    enabled = x;
+    return self;
+  };
+
+  self.wrap = function(name, func) {
+    return function() {
+      var start = enabled ? new Date().getTime() : null;
+      try {
+        return func.apply(null, arguments);
+      } finally {
+        if (start) console.log(name + " time: " + (new Date().getTime() - start) + "ms");
+      }
+    }
+  };
+
+  return self;
+}
+
+function propertyAccessor(self, config, field, setHook) {
+  return function(x) {
+    if (!arguments.length) return config[field];
+    config[field] = x;
+    if (setHook) setHook(x);
+    return self;
+  };
 }
 function priorityQueue() {
   var _arr = [];
@@ -1499,7 +1508,7 @@ dagre.dot.toGraph = function(str) {
     }
     edgeCount[edgeKey]++;
 
-    var id = edgeKey + "-" + count;
+    var id = attrs.id || edgeKey + "-" + count;
     var edge = {};
     mergeAttributes(attrs, edge);
     mergeAttributes({ id: id }, edge);
