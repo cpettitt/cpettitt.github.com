@@ -126,11 +126,20 @@ digraph {
 // Input related code goes here
 
 function graphToURL() {
-  return [window.location.protocol, '//',
-          window.location.host,
-          window.location.pathname,
-          '?graph=', encodeURIComponent(inputGraph.value),
-          '&style=', encodeURIComponent(inputStyle.node().value)].join('');
+  var elems = [window.location.protocol, '//',
+               window.location.host,
+               window.location.pathname,
+               '?'];
+
+  var queryParams = [];
+  if (debugAlignment) {
+    queryParams.push('alignment=' + debugAlignment);
+  }
+  queryParams.push('graph=' + encodeURIComponent(inputGraph.value));
+  queryParams.push('style=', encodeURIComponent(inputStyle.node().value));
+  elems.push(queryParams.join('&'));
+
+  return elems.join('');
 }
 
 var inputGraph = document.querySelector("#inputGraph");
@@ -157,6 +166,10 @@ if (styleMatch) {
   // graph definition coming in via the URL.
   inputStyle.text("");
 }
+var debugAlignmentRE = /[?&]alignment=([^&]+)/;
+var debugAlignmentMatch = window.location.search.match(debugAlignmentRE);
+var debugAlignment;
+if (debugAlignmentMatch) debugAlignment = debugAlignmentMatch[1];
 
 var nodeCache = {},
     edgeCache = {};
@@ -170,6 +183,7 @@ function tryDraw() {
       result = dagre.dot.toObjects(inputGraph.value);
       result.edges.forEach(function(e) { if (!e.label) { e.label = ""; } });
     } catch (e) {
+      throw e;
       inputGraph.setAttribute("class", "error");
     }
 
@@ -195,7 +209,7 @@ function tryDraw() {
 
 <script>
 var svg = d3.select("svg");
-var svgGroup = svg.append("g").attr("transform", "translate(5, 5)");
+var svgGroup = svg.append("g");
 
 var nodes, edges;
 function draw(nodeData, edgeData) {
@@ -236,6 +250,7 @@ function draw(nodeData, edgeData) {
   recalcLabels();
 
   // Add zoom behavior to the SVG canvas
+  svgGroup.attr("transform", "translate(5, 5)");
   svg.call(d3.behavior.zoom().on("zoom", function redraw() {
     svgGroup.attr("transform",
           "translate(" + d3.event.translate + ")"
@@ -243,11 +258,20 @@ function draw(nodeData, edgeData) {
   }));
 
   // Run the actual layout
-  dagre.layout()
+  var layout = dagre.layout()
     .nodes(nodeData)
     .edges(edgeData)
-    .debugLevel(2)
+    .debugLevel(3)
     .run();
+
+  if (debugAlignment) {
+    edges.each(function(e) {
+      e.dagre.points.forEach(function(p) {
+        p.x = p[debugAlignment];
+      });
+    });
+    nodes.each(function(d) { d.dagre.x = d.dagre[debugAlignment]; });
+  }
 
   // Ensure that we have at least two points between source and target
   edges.each(function(d) { ensureTwoControlPoints(d); });
@@ -358,27 +382,23 @@ function recalcLabels() {
       .attr("text-anchor", "left")
         .append("tspan")
         .attr("dy", "1em")
-        .text(function(d) { return d.label; });
+        .text(function(d) { return d.label || " "; });
 
   labelGroup
     .each(function(d) {
       var bbox = this.getBBox();
       d.bbox = bbox;
-      if (d.label.length) {
-        d.width = bbox.width + 2 * d.nodePadding;
-        d.height = bbox.height + 2 * d.nodePadding;
-      } else {
-        d.width = d.height = 0;
-      }
+      d.width = bbox.width + 2 * d.nodePadding;
+      d.height = bbox.height + 2 * d.nodePadding;
     });
 }
 
 function ensureTwoControlPoints(d) {
   var points = d.dagre.points;
   if (!points.length) {
-    var s = e.source.dagre;
-    var t = e.target.dagre;
-    points.push({ x: Math.abs(s.x - t.x) / 2, y: Math.abs(s.y + t.y) / 2 });
+    var s = d.source.dagre;
+    var t = d.target.dagre;
+    points.push({ x: (s.x + t.x) / 2, y: (s.y + t.y) / 2 });
   }
 
   if (points.length === 1) {
