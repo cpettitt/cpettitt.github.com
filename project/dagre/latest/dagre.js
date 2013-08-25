@@ -27,341 +27,7 @@ global.dagre = {
   version: require("./lib/version")
 };
 
-},{"./lib/dot":8,"./lib/layout/layout":10,"./lib/util":14,"./lib/version":15}],2:[function(require,module,exports){
-var util = require("./util");
-
-module.exports = Graph;
-
-function Graph() {
-  /* Map of nodeId -> {id, value} */
-  this._nodes = {};
-
-  /* Map of sourceId -> {targetId -> {count, edgeId -> true}} */
-  this._inEdges = {};
-
-  /* Map of targetId -> {sourceId -> {count, edgeId -> true}} */
-  this._outEdges = {};
-
-  /* Map of edgeId -> {id, source, target, value} */
-  this._edges = {};
-
-  /* Used to generate anonymous edge ids */
-  this._nextEdgeId = 0;
-}
-
-/*
- * Adds a new node with the id `u` to the graph and assigns it the value
- * `value`. If a node with the id is already a part of the graph this function
- * throws an Error.
- */
-Graph.prototype.addNode = function(u, value) {
-  if (this.hasNode(u)) {
-    throw new Error("Graph already has node '" + u + "':\n" + this.toString());
-  }
-  this._nodes[u] = { id: u, value: value };
-  this._inEdges[u] = {};
-  this._outEdges[u] = {};
-};
-
-/*
- * Removes a node from the graph that has the id `u`. Any edges incident on the
- * node are also removed. If the graph does not contain a node with the id this
- * function will throw an Error.
- */
-Graph.prototype.delNode = function(u) {
-  this._strictGetNode(u);
-
-  var self = this;
-  this.edges(u).forEach(function(e) { self.delEdge(e); });
-
-  delete this._inEdges[u];
-  delete this._outEdges[u];
-  delete this._nodes[u];
-};
-
-/*
- * Returns the value for a node in the graph with the id `u`. If no such node
- * is in the graph this function will throw an Error.
- */
-Graph.prototype.node = function(u) {
-  return this._strictGetNode(u).value;
-};
-
-/*
- * Returns `true` if this graph contains a node with the id `u`. Otherwise
- * returns false.
- */
-Graph.prototype.hasNode = function(u) {
-  return u in this._nodes;
-};
-
-/*
- * Adds a new edge to the graph with the id `e` from a node with the id `source`
- * to a noce with an id `target` and assigns it the value `value`. This graph
- * allows more than one edge from `source` to `target` as long as the id `e`
- * is unique in the set of edges. If `e` is `null` the graph will assign a
- * unique identifier to the edge.
- *
- * If `source` or `target` are not present in the graph this function will
- * throw an Error.
- */
-Graph.prototype.addEdge = function(e, source, target, value) {
-  this._strictGetNode(source);
-  this._strictGetNode(target);
-
-  if (e === null) {
-    e = "_ANON-" + (++this._nextEdgeId);
-  }
-  else if (this.hasEdge(e)) {
-    throw new Error("Graph already has edge '" + e + "':\n" + this.toString());
-  }
-
-  this._edges[e] = { id: e, source: source, target: target, value: value };
-  addEdgeToMap(this._inEdges[target], source, e);
-  addEdgeToMap(this._outEdges[source], target, e);
-};
-
-/*
- * Removes an edge in the graph with the id `e`. If no edge in the graph has
- * the id `e` this function will throw an Error.
- */
-Graph.prototype.delEdge = function(e) {
-  var edge = this._strictGetEdge(e);
-  delEdgeFromMap(this._inEdges[edge.target], edge.source, e);
-  delEdgeFromMap(this._outEdges[edge.source], edge.target, e);
-  delete this._edges[e];
-};
-
-/*
- * Returns the value for an edge with the id `e`. If no such edge exists in
- * the graph this function throws an Error.
- */
-Graph.prototype.edge = function(e) {
-  return this._strictGetEdge(e).value;
-};
-
-/*
- * Returns the source node incident on the edge identified by the id `e`. If no
- * such edge exists in the graph this function throws an Error.
- */
-Graph.prototype.source = function(e) {
-  return this._strictGetEdge(e).source;
-};
-
-/*
- * Returns the target node incident on the edge identified by the id `e`. If no
- * such edge exists in the graph this function throws an Error.
- */
-Graph.prototype.target = function(e) {
-  return this._strictGetEdge(e).target;
-};
-
-/*
- * Returns `true` if this graph has an edge with the id `e`. Otherwise this
- * function returns `false`.
- */
-Graph.prototype.hasEdge = function(e) {
-  return e in this._edges;
-};
-
-/*
- * Returns all successors of the node with the id `u`. That is, all nodes
- * that have the node `u` as their source are returned.
- *
- * If no node `u` exists in the graph this function throws an Error.
- */
-Graph.prototype.successors = function(u) {
-  this._strictGetNode(u);
-  return Object.keys(this._outEdges[u])
-               .map(function(v) { return this._nodes[v].id; }, this);
-};
-
-/*
- * Returns all predecessors of the node with the id `u`. That is, all nodes
- * that have the node `u` as their target are returned.
- *
- * If no node `u` exists in the graph this function throws an Error.
- */
-Graph.prototype.predecessors = function(u) {
-  this._strictGetNode(u);
-  return Object.keys(this._inEdges[u])
-               .map(function(v) { return this._nodes[v].id; }, this);
-};
-
-/*
- * Returns all nodes that are adjacent to the node with the id `u`. In other
- * words, this function returns the set of all successors and predecessors of
- * node `u`.
- */
-Graph.prototype.neighbors = function(u) {
-  this._strictGetNode(u);
-  var vs = {};
-
-  Object.keys(this._outEdges[u])
-        .map(function(v) { vs[v] = true; });
-
-  Object.keys(this._inEdges[u])
-        .map(function(v) { vs[v] = true; });
-
-  return Object.keys(vs)
-               .map(function(v) { return this._nodes[v].id; }, this);
-};
-
-/*
- * Returns the ids of all nodes in this graph. Use `graph.node(u)` to get the
- * value for a specific node.
- */
-Graph.prototype.nodes = function() {
-  var nodes = [];
-  this.eachNode(function(id, _) { nodes.push(id); });
-  return nodes;
-};
-
-/*
- * Apples a function that takes the parameters (`id`, `value`) to each node in
- * the graph in arbitrary order.
- */
-Graph.prototype.eachNode = function(func) {
-  for (var k in this._nodes) {
-    var node = this._nodes[k];
-    func(node.id, node.value);
-  }
-};
-
-/*
- * Return all edges with no arguments,
- * the ones that are incident on a node (one argument),
- * or all edges from a source to a target (two arguments)
- */
-Graph.prototype.edges = function(u, v) {
-  var es, sourceEdges;
-  if (!arguments.length) {
-    es = [];
-    this.eachEdge(function(id) { es.push(id); });
-    return es;
-  } else if (arguments.length === 1) {
-    return util.union([this.inEdges(u), this.outEdges(u)]);
-  } else if (arguments.length === 2) {
-    this._strictGetNode(u);
-    this._strictGetNode(v);
-    sourceEdges = this._outEdges[u];
-    es = (v in sourceEdges) ? Object.keys(sourceEdges[v].edges) : [];
-    return es.map(function(e) { return this._edges[e].id; }, this);
-  }
-};
-
-/*
- * Applies a function that takes the parameters (`id`, `source`, `target`,
- * `value`) to each edge in this graph in arbitrary order.
- */
-Graph.prototype.eachEdge = function(func) {
-  for (var k in this._edges) {
-    var edge = this._edges[k];
-    func(edge.id, edge.source, edge.target, edge.value);
-  }
-};
-
-/*
- * Returns the ids of all edges in the graph that have the node `target` as
- * their target. If the node `target` is not in the graph this function raises
- * an Error.
- */
-Graph.prototype.inEdges = function(target) {
-  this._strictGetNode(target);
-  return util.concat(util.values(this._inEdges[target])
-             .map(function(es) { return Object.keys(es.edges); }, this));
-};
-
-/*
- * Returns the ids of all nodes in the graph that have the node `source` as
- * their source. If the node `source` is not in the graph this function raises
- * an Error.
- */
-Graph.prototype.outEdges = function(source) {
-  this._strictGetNode(source);
-  return util.concat(util.values(this._outEdges[source])
-             .map(function(es) { return Object.keys(es.edges); }, this));
-};
-
-/*
- * Constructs and returns a new graph that includes only the nodes in `us`. Any
- * edges that have both their source and target in the set `us` are also
- * included in the subgraph. If any of the nodes in `us` are not in this graph
- * this function raises an Error.
- */
-Graph.prototype.subgraph = function(us) {
-  var g = new Graph();
-  var self = this;
-
-  us.forEach(function(u) { g.addNode(u, self.node(u)); });
-  util.values(this._edges).forEach(function(e) {
-    if (g.hasNode(e.source) && g.hasNode(e.target)) {
-      g.addEdge(e.id, e.source, e.target, self.edge(e.id));
-    }
-  });
-
-  return g;
-};
-
-/*
- * Returns a string representation of this graph.
- */
-Graph.prototype.toString = function() {
-  var self = this;
-  var str = "GRAPH:\n";
-
-  str += "    Nodes:\n";
-  Object.keys(this._nodes)
-        .forEach(function(u) {
-          str += "        " + u + ": " + JSON.stringify(self._nodes[u].value) + "\n";
-        });
-
-  str += "    Edges:\n";
-  Object.keys(this._edges)
-        .forEach(function(e) {
-          var edge = self._edges[e];
-          str += "        " + e + " (" + edge.source + " -> " + edge.target + "): " +
-                 JSON.stringify(self._edges[e].value) + "\n";
-        });
-
-  return str;
-};
-
-Graph.prototype._strictGetNode = function(u) {
-  var node = this._nodes[u];
-  if (node === undefined) {
-    throw new Error("Node '" + u + "' is not in graph:\n" + this.toString());
-  }
-  return node;
-};
-
-Graph.prototype._strictGetEdge = function(e) {
-  var edge = this._edges[e];
-  if (edge === undefined) {
-    throw new Error("Edge '" + e + "' is not in graph:\n" + this.toString());
-  }
-  return edge;
-};
-
-function addEdgeToMap(map, v, e) {
-  var vEntry = map[v];
-  if (!vEntry) {
-    vEntry = map[v] = { count: 0, edges: {} };
-  }
-  vEntry.count++;
-  vEntry.edges[e] = true;
-}
-
-function delEdgeFromMap(map, v, e) {
-  var vEntry = map[v];
-  if (--vEntry.count === 0) {
-    delete map[v];
-  } else {
-    delete vEntry.edges[e];
-  }
-}
-
-},{"./util":14}],3:[function(require,module,exports){
+},{"./lib/dot":7,"./lib/layout/layout":9,"./lib/util":13,"./lib/version":14}],2:[function(require,module,exports){
 /*
  * Returns all components in the graph using undirected navigation.
  */
@@ -390,7 +56,7 @@ module.exports = function(g) {
   return results;
 };
 
-},{}],4:[function(require,module,exports){
+},{}],3:[function(require,module,exports){
 var PriorityQueue = require("../data/PriorityQueue");
 
 /*
@@ -445,7 +111,7 @@ module.exports = function(g, weight) {
 };
 
 
-},{"../data/PriorityQueue":5}],5:[function(require,module,exports){
+},{"../data/PriorityQueue":4}],4:[function(require,module,exports){
 module.exports = PriorityQueue;
 
 function PriorityQueue() {
@@ -542,7 +208,7 @@ PriorityQueue.prototype._swap = function(i, j) {
   keyIndices[arr[j].key] = j;
 };
 
-},{}],6:[function(require,module,exports){
+},{}],5:[function(require,module,exports){
 module.exports = Set;
 
 function Set(initialKeys) {
@@ -580,7 +246,7 @@ Set.prototype.remove = function(key) {
   return false;
 };
 
-},{}],7:[function(require,module,exports){
+},{}],6:[function(require,module,exports){
 module.exports = (function(){
   /*
    * Generated by PEG.js 0.7.0.
@@ -1332,6 +998,7 @@ module.exports = (function(){
             }
             if (result2 !== null) {
               result3 = parse_stmtList();
+              result3 = result3 !== null ? result3 : "";
               if (result3 !== null) {
                 result4 = [];
                 result5 = parse__();
@@ -3053,9 +2720,9 @@ module.exports = (function(){
   return result;
 })();
 
-},{}],8:[function(require,module,exports){
+},{}],7:[function(require,module,exports){
 var util = require("./util"),
-    Graph = require("./Graph");
+    Graph = require("graphlib").Graph;
 
 var dot_parser = require("./dot-grammar");
 
@@ -3204,7 +2871,9 @@ function parseOne(parseTree) {
         break;
       case "subgraph":
         defaultAttrs.enterSubGraph();
-        stmt.stmts.forEach(function(s) { handleStmt(s); });
+        if (stmt.stmts) {
+          stmt.stmts.forEach(function(s) { handleStmt(s); });
+        }
         defaultAttrs.exitSubGraph();
         break;
       case "attr":
@@ -3237,7 +2906,7 @@ exports.toObjects = function(str) {
   return { nodes: nodes, edges: edges };
 };
 
-},{"./Graph":2,"./dot-grammar":7,"./util":14}],9:[function(require,module,exports){
+},{"./dot-grammar":6,"./util":13,"graphlib":15}],8:[function(require,module,exports){
 var util = require("../util");
 
 module.exports = function() {
@@ -3301,10 +2970,10 @@ module.exports = function() {
   }
 };
 
-},{"../util":14}],10:[function(require,module,exports){
+},{"../util":13}],9:[function(require,module,exports){
 var util = require("../util"),
-    Graph = require("../Graph"),
-    rank = require("./rank");
+    rank = require("./rank"),
+    Graph = require("graphlib").Graph;
 
 module.exports = function() {
   // External configuration
@@ -3544,7 +3213,7 @@ module.exports = function() {
   }
 };
 
-},{"../Graph":2,"../util":14,"./acyclic":9,"./order":11,"./position":12,"./rank":13}],11:[function(require,module,exports){
+},{"../util":13,"./acyclic":8,"./order":10,"./position":11,"./rank":12,"graphlib":15}],10:[function(require,module,exports){
 var util = require("../util");
 
 module.exports = function() {
@@ -3602,6 +3271,13 @@ module.exports = function() {
     if (config.debugLevel >= 2) {
       console.log("Order iterations: " + i);
       console.log("Order phase best cross count: " + bestCC);
+    }
+
+    if (config.debugLevel >= 4) {
+      console.log("Final layering:");
+      bestLayering.forEach(function(layer, i) {
+        console.log("Layer: " + i, layer);
+      });
     }
 
     return bestLayering;
@@ -3768,7 +3444,7 @@ function layerPos(layer) {
   return pos;
 }
 
-},{"../util":14}],12:[function(require,module,exports){
+},{"../util":13}],11:[function(require,module,exports){
 var util = require("../util");
 
 /*
@@ -4200,7 +3876,7 @@ module.exports = function() {
   }
 };
 
-},{"../util":14}],13:[function(require,module,exports){
+},{"../util":13}],12:[function(require,module,exports){
 var util = require("../util"),
     components = require("../algo/components"),
     prim = require("../algo/prim"),
@@ -4310,7 +3986,7 @@ function incidenceId(u, v) {
   return u < v ?  u.length + ":" + u + "-" + v : v.length + ":" + v + "-" + u;
 }
 
-},{"../algo/components":3,"../algo/prim":4,"../data/PriorityQueue":5,"../data/Set":6,"../util":14}],14:[function(require,module,exports){
+},{"../algo/components":2,"../algo/prim":3,"../data/PriorityQueue":4,"../data/Set":5,"../util":13}],13:[function(require,module,exports){
 /*
  * Copies attributes from `src` to `dst`. If an attribute name is in both
  * `src` and `dst` then the attribute value from `src` takes precedence.
@@ -4331,6 +4007,20 @@ exports.min = function(values) {
  */
 exports.max = function(values) {
   return Math.max.apply(null, values);
+};
+
+/*
+ * Returns `true` only if `f(x)` is `true` for all `x` in `xs`. Otherwise
+ * returns `false`. This function will return immediately if it finds a
+ * case where `f(x)` does not hold.
+ */
+exports.all = function(xs, f) {
+  for (var i = 0; i < xs.length; ++i) {
+    if (!f(xs[i])) {
+      return false; 
+    }
+  }
+  return true;
 };
 
 /*
@@ -4450,8 +4140,527 @@ exports.propertyAccessor = function(self, config, field, setHook) {
   };
 };
 
-},{}],15:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 module.exports = '0.1.0';
+
+},{}],15:[function(require,module,exports){
+exports.Graph = require("./lib/Graph");
+exports.alg = require("./lib/alg");
+exports.version = require("./lib/version");
+
+},{"./lib/Graph":16,"./lib/alg":17,"./lib/version":20}],16:[function(require,module,exports){
+/*
+ * This file is organized with in the following order:
+ *
+ * Exports
+ * Graph constructors
+ * Graph queries (e.g. nodes(), edges()
+ * Graph mutators
+ * Helper functions
+ */
+
+module.exports = Graph;
+
+/*
+ * A directed multi-graph.
+ */
+function Graph() {
+  /* Map of nodeId -> {id, value} */
+  this._nodes = {};
+
+  /* Map of sourceId -> {targetId -> {count, edgeId -> true}} */
+  this._inEdges = {};
+
+  /* Map of targetId -> {sourceId -> {count, edgeId -> true}} */
+  this._outEdges = {};
+
+  /* Map of edgeId -> {id, source, target, value} */
+  this._edges = {};
+
+  /* Used to generate anonymous edge ids */
+  this._nextEdgeId = 0;
+}
+
+/*
+ * Constructs and returns a new graph that includes only the nodes in `us`. Any
+ * edges that have both their source and target in the set `us` are also
+ * included in the subgraph.
+ *
+ * Changes to the graph itself are not reflected in the original graph.
+ * However, the values for nodes and edges are not copied. If the values are
+ * objects then their changes will be reflected in the original graph and the
+ * subgraph.
+ *
+ * If any of the nodes in `us` are not in this graph this function raises an
+ * Error.
+ */
+Graph.prototype.subgraph = function(us) {
+  var g = new Graph();
+  var self = this;
+
+  us.forEach(function(u) { g.addNode(u, self.node(u)); });
+  values(this._edges).forEach(function(e) {
+    if (g.hasNode(e.source) && g.hasNode(e.target)) {
+      g.addEdge(e.id, e.source, e.target, self.edge(e.id));
+    }
+  });
+
+  return g;
+};
+
+/*
+ * Returns the number of nodes in this graph.
+ */
+Graph.prototype.order = function() {
+  return Object.keys(this._nodes).length;
+};
+
+/*
+ * Returns the number of edges in this graph.
+ */
+Graph.prototype.size = function() {
+  return Object.keys(this._edges).length;
+};
+
+/*
+ * Returns `true` if this graph contains a node with the id `u`. Otherwise
+ * returns false.
+ */
+Graph.prototype.hasNode = function(u) {
+  return u in this._nodes;
+};
+
+/*
+ * Returns the value for a node in the graph with the id `u`. If no such node
+ * is in the graph this function will throw an Error.
+ */
+Graph.prototype.node = function(u) {
+  return this._strictGetNode(u).value;
+};
+
+/*
+ * Returns the ids of all nodes in this graph. Use `graph.node(u)` to get the
+ * value for a specific node.
+ */
+Graph.prototype.nodes = function() {
+  var nodes = [];
+  this.eachNode(function(id, _) { nodes.push(id); });
+  return nodes;
+};
+
+/*
+ * Applies a function that takes the parameters (`id`, `value`) to each node in
+ * the graph in arbitrary order.
+ */
+Graph.prototype.eachNode = function(func) {
+  for (var k in this._nodes) {
+    var node = this._nodes[k];
+    func(node.id, node.value);
+  }
+};
+
+/*
+ * Returns all successors of the node with the id `u`. That is, all nodes
+ * that have the node `u` as their source are returned.
+ *
+ * If no node `u` exists in the graph this function throws an Error.
+ */
+Graph.prototype.successors = function(u) {
+  this._strictGetNode(u);
+  return Object.keys(this._outEdges[u])
+               .map(function(v) { return this._nodes[v].id; }, this);
+};
+
+/*
+ * Returns all predecessors of the node with the id `u`. That is, all nodes
+ * that have the node `u` as their target are returned.
+ *
+ * If no node `u` exists in the graph this function throws an Error.
+ */
+Graph.prototype.predecessors = function(u) {
+  this._strictGetNode(u);
+  return Object.keys(this._inEdges[u])
+               .map(function(v) { return this._nodes[v].id; }, this);
+};
+
+/*
+ * Returns all nodes that are adjacent to the node with the id `u`. In other
+ * words, this function returns the set of all successors and predecessors of
+ * node `u`.
+ */
+Graph.prototype.neighbors = function(u) {
+  this._strictGetNode(u);
+  var vs = {};
+
+  Object.keys(this._outEdges[u])
+        .map(function(v) { vs[v] = true; });
+
+  Object.keys(this._inEdges[u])
+        .map(function(v) { vs[v] = true; });
+
+  return Object.keys(vs)
+               .map(function(v) { return this._nodes[v].id; }, this);
+};
+
+/*
+ * Returns all nodes in the graph that have no in-edges.
+ */
+Graph.prototype.sources = function() {
+  var self = this;
+  return this._filterNodes(function(u) {
+    // This could have better space characteristics if we had an inDegree function.
+    return self.inEdges(u).length === 0;
+  });
+};
+
+/*
+ * Returns all nodes in the graph that have no out-edges.
+ */
+Graph.prototype.sinks = function() {
+  var self = this;
+  return this._filterNodes(function(u) {
+    // This could have better space characteristics if we have an outDegree function.
+    return self.outEdges(u).length === 0;
+  });
+};
+
+/*
+ * Returns `true` if this graph has an edge with the id `e`. Otherwise this
+ * function returns `false`.
+ */
+Graph.prototype.hasEdge = function(e) {
+  return e in this._edges;
+};
+
+/*
+ * Returns the value for an edge with the id `e`. If no such edge exists in
+ * the graph this function throws an Error.
+ */
+Graph.prototype.edge = function(e) {
+  return this._strictGetEdge(e).value;
+};
+
+/*
+ * Return all edges with no arguments,
+ * the ones that are incident on a node (one argument),
+ * or all edges from a source to a target (two arguments)
+ */
+Graph.prototype.edges = function(u, v) {
+  var es, sourceEdges;
+  if (!arguments.length) {
+    es = [];
+    this.eachEdge(function(id) { es.push(id); });
+    return es;
+  } else if (arguments.length === 1) {
+    return mergeKeys([this.inEdges(u), this.outEdges(u)]);
+  } else if (arguments.length === 2) {
+    this._strictGetNode(u);
+    this._strictGetNode(v);
+    sourceEdges = this._outEdges[u];
+    es = (v in sourceEdges) ? Object.keys(sourceEdges[v].edges) : [];
+    return es.map(function(e) { return this._edges[e].id; }, this);
+  }
+};
+
+/*
+ * Applies a function that takes the parameters (`id`, `source`, `target`,
+ * `value`) to each edge in this graph in arbitrary order.
+ */
+Graph.prototype.eachEdge = function(func) {
+  for (var k in this._edges) {
+    var edge = this._edges[k];
+    func(edge.id, edge.source, edge.target, edge.value);
+  }
+};
+
+/*
+ * Returns the source node incident on the edge identified by the id `e`. If no
+ * such edge exists in the graph this function throws an Error.
+ */
+Graph.prototype.source = function(e) {
+  return this._strictGetEdge(e).source;
+};
+
+/*
+ * Returns the target node incident on the edge identified by the id `e`. If no
+ * such edge exists in the graph this function throws an Error.
+ */
+Graph.prototype.target = function(e) {
+  return this._strictGetEdge(e).target;
+};
+
+/*
+ * Returns the ids of all edges in the graph that have the node `target` as
+ * their target. If the node `target` is not in the graph this function raises
+ * an Error.
+ */
+Graph.prototype.inEdges = function(target) {
+  this._strictGetNode(target);
+  return concat(values(this._inEdges[target])
+             .map(function(es) { return Object.keys(es.edges); }, this));
+};
+
+/*
+ * Returns the ids of all nodes in the graph that have the node `source` as
+ * their source. If the node `source` is not in the graph this function raises
+ * an Error.
+ */
+Graph.prototype.outEdges = function(source) {
+  this._strictGetNode(source);
+  return concat(values(this._outEdges[source])
+             .map(function(es) { return Object.keys(es.edges); }, this));
+};
+
+Graph.prototype.equals = function(other) {
+  var self = this;
+
+  return self.order() === other.order() &&
+         self.size() === other.size() &&
+         all(self.nodes(), function(x) { return other.hasNode(x) && self.node(x) === other.node(x); }) &&
+         all(self.edges(), function(x) { return other.hasEdge(x) && self.edge(x) === other.edge(x); });
+};
+
+/*
+ * Returns a string representation of this graph.
+ */
+Graph.prototype.toString = function() {
+  var self = this;
+  var str = "GRAPH:\n";
+
+  str += "    Nodes:\n";
+  Object.keys(this._nodes)
+        .forEach(function(u) {
+          str += "        " + u + ": " + JSON.stringify(self._nodes[u].value) + "\n";
+        });
+
+  str += "    Edges:\n";
+  Object.keys(this._edges)
+        .forEach(function(e) {
+          var edge = self._edges[e];
+          str += "        " + e + " (" + edge.source + " -> " + edge.target + "): " +
+                 JSON.stringify(self._edges[e].value) + "\n";
+        });
+
+  return str;
+};
+
+/*
+ * Adds a new node with the id `u` to the graph and assigns it the value
+ * `value`. If a node with the id is already a part of the graph this function
+ * throws an Error.
+ */
+Graph.prototype.addNode = function(u, value) {
+  if (this.hasNode(u)) {
+    throw new Error("Graph already has node '" + u + "':\n" + this.toString());
+  }
+  this._nodes[u] = { id: u, value: value };
+  this._inEdges[u] = {};
+  this._outEdges[u] = {};
+};
+
+/*
+ * Removes a node from the graph that has the id `u`. Any edges incident on the
+ * node are also removed. If the graph does not contain a node with the id this
+ * function will throw an Error.
+ */
+Graph.prototype.delNode = function(u) {
+  this._strictGetNode(u);
+
+  var self = this;
+  this.edges(u).forEach(function(e) { self.delEdge(e); });
+
+  delete this._inEdges[u];
+  delete this._outEdges[u];
+  delete this._nodes[u];
+};
+
+/*
+ * Adds a new edge to the graph with the id `e` from a node with the id `source`
+ * to a noce with an id `target` and assigns it the value `value`. This graph
+ * allows more than one edge from `source` to `target` as long as the id `e`
+ * is unique in the set of edges. If `e` is `null` the graph will assign a
+ * unique identifier to the edge.
+ *
+ * If `source` or `target` are not present in the graph this function will
+ * throw an Error.
+ */
+Graph.prototype.addEdge = function(e, source, target, value) {
+  this._strictGetNode(source);
+  this._strictGetNode(target);
+
+  if (e === null) {
+    e = "_ANON-" + (++this._nextEdgeId);
+  }
+  else if (this.hasEdge(e)) {
+    throw new Error("Graph already has edge '" + e + "':\n" + this.toString());
+  }
+
+  this._edges[e] = { id: e, source: source, target: target, value: value };
+  addEdgeToMap(this._inEdges[target], source, e);
+  addEdgeToMap(this._outEdges[source], target, e);
+};
+
+/*
+ * Removes an edge in the graph with the id `e`. If no edge in the graph has
+ * the id `e` this function will throw an Error.
+ */
+Graph.prototype.delEdge = function(e) {
+  var edge = this._strictGetEdge(e);
+  delEdgeFromMap(this._inEdges[edge.target], edge.source, e);
+  delEdgeFromMap(this._outEdges[edge.source], edge.target, e);
+  delete this._edges[e];
+};
+
+Graph.prototype._strictGetNode = function(u) {
+  var node = this._nodes[u];
+  if (node === undefined) {
+    throw new Error("Node '" + u + "' is not in graph:\n" + this.toString());
+  }
+  return node;
+};
+
+Graph.prototype._strictGetEdge = function(e) {
+  var edge = this._edges[e];
+  if (edge === undefined) {
+    throw new Error("Edge '" + e + "' is not in graph:\n" + this.toString());
+  }
+  return edge;
+};
+
+Graph.prototype._filterNodes = function(pred) {
+  var filtered = [];
+  this.eachNode(function(u, value) {
+    if (pred(u)) {
+      filtered.push(u);
+    }
+  });
+  return filtered;
+};
+
+function addEdgeToMap(map, v, e) {
+  var vEntry = map[v];
+  if (!vEntry) {
+    vEntry = map[v] = { count: 0, edges: {} };
+  }
+  vEntry.count++;
+  vEntry.edges[e] = true;
+}
+
+function delEdgeFromMap(map, v, e) {
+  var vEntry = map[v];
+  if (--vEntry.count === 0) {
+    delete map[v];
+  } else {
+    delete vEntry.edges[e];
+  }
+}
+
+// Returns `true` only if `f(x)` is `true` for all `x` in **xs**. Otherwise
+// returns `false`. This function will return immediately if it finds a
+// case where `f(x)` does not hold.
+function all(xs, f) {
+  for (var i = 0; i < xs.length; ++i) {
+    if (!f(xs[i])) return false;
+  }
+  return true;
+}
+
+// Returns an array of all values for properties of **o**.
+function values(o) {
+  return Object.keys(o).map(function(k) { return o[k]; });
+}
+
+// Joins all of the arrays **xs** into a single array.
+function concat(xs) {
+  return Array.prototype.concat.apply([], xs);
+}
+
+// Similar to **concat**, but all duplicates are removed
+function mergeKeys(xs) {
+  var obj = {};
+  xs.forEach(function(x) {
+    x.forEach(function(o) {
+      obj[o] = o;
+    });
+  });
+  return values(obj);
+}
+
+},{}],17:[function(require,module,exports){
+module.exports = {
+  isAcyclic: require("./alg/isAcyclic"),
+  topsort: require("./alg/topsort")
+};
+
+},{"./alg/isAcyclic":18,"./alg/topsort":19}],18:[function(require,module,exports){
+var topsort = require("./topsort");
+
+module.exports = isAcyclic;
+
+// Given a Graph **g** this function returns `true` if the graph has no cycles
+// and returns `false` if it does.
+function isAcyclic(g) {
+  try {
+    topsort(g);
+  } catch (e) {
+    if (e instanceof topsort.CycleException) return false;
+    throw e;
+  }
+  return true;
+}
+
+},{"./topsort":19}],19:[function(require,module,exports){
+module.exports = topsort;
+topsort.CycleException = CycleException;
+
+// Given a graph **g**, this function returns an ordered list of nodes such
+// that for each edge `u -> v`, `u` appears before `v` in the list. If the
+// graph has a cycle it is impossible to generate such a list and
+// **CycleException** is thrown.
+//
+// See [topological sorting](https://en.wikipedia.org/wiki/Topological_sorting)
+// for more details about how this algorithm works.
+function topsort(g) {
+  var visited = {};
+  var stack = {};
+  var results = [];
+
+  function visit(node) {
+    if (node in stack) {
+      throw new CycleException();
+    }
+
+    if (!(node in visited)) {
+      stack[node] = true;
+      visited[node] = true;
+      g.predecessors(node).forEach(function(pred) {
+        visit(pred);
+      });
+      delete stack[node];
+      results.push(node);
+    }
+  }
+
+  var sinks = g.sinks();
+  if (g.order() !== 0 && sinks.length === 0) {
+    throw new CycleException();
+  }
+
+  g.sinks().forEach(function(sink) {
+    visit(sink);
+  });
+
+  return results;
+}
+
+function CycleException() {}
+
+CycleException.prototype.toString = function() {
+  return "Graph has at least one cycle";
+};
+
+},{}],20:[function(require,module,exports){
+module.exports = '0.0.1';
 
 },{}]},{},[1])
 ;

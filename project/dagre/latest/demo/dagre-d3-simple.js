@@ -169,6 +169,7 @@ function renderDagreObjsToD3(graphData, svgSelector) {
 
   // Run the actual layout
   dagre.layout()
+    .debugLevel(4)
     .nodes(nodeData)
     .edges(edgeData)
     .run();
